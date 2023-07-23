@@ -162,12 +162,12 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         # Define actor's model
         self.actor = nn.Sequential(
-            nn.Linear(self.embedding_size, 64), nn.Tanh(), nn.Linear(64, action_space.n)
+            nn.Linear(self.embedding_size+64 if not "filmcnn" in self.arch else self.embedding_size, 64), nn.Tanh(), nn.Linear(64, action_space.n)
         )
 
         # Define critic's model
         self.critic = nn.Sequential(
-            nn.Linear(self.embedding_size, 64), nn.Tanh(), nn.Linear(64, 1)
+            nn.Linear(self.embedding_size+64 if not "filmcnn" in self.arch else self.embedding_size, 64), nn.Tanh(), nn.Linear(64, 1)
         )
 
         # Initialize parameters correctly
