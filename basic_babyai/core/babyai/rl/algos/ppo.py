@@ -199,7 +199,6 @@ class PPOAlgo(BaseAlgo):
                         + video_text_similarity
                     ) / 4
             # calculate loss function
-            print(similarity_mx)
             x_clip_loss = self.calculate_contrastive_loss(similarity_mx)
             ######################################################################
 
