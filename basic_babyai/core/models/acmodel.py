@@ -246,7 +246,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
         vq_loss = None
         residual_instr = None
         if self.use_instr and instr_embedding is None:
-            instr_embedding = self._get_instr_embedding(obs.instr)
+            instr_embedding, instr_tokens = self._get_instr_embedding(obs.instr)
             if self.lang_model == "gru":
                 residual_instr = instr_embedding
         if self.use_instr and self.lang_model == "attgru":
@@ -273,7 +273,7 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         x = x.reshape(x.shape[0], -1)
         frame_embedding = x
-        frame_embedding = self.x_clip(frame_embedding)
+        frame_embedding = self.x_clip(frame_embedding.to(self.device))
 
         if self.use_memory:
             bs, mh = memory.shape
@@ -314,13 +314,15 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
             "middle_reps": dict(middle_x=middle_x),
             "m_ts": None,
             "frame_embedding": frame_embedding,
-            "text_embedding": instr_embedding,
+            "token_embedding": instr_tokens,
+            "instr_embedding": instr_embedding
         }
 
     def _get_instr_embedding(self, instr):
         if self.lang_model == "gru":
-            _, hidden = self.instr_rnn(self.word_embedding(instr).to(self.device))
-            return hidden[-1]
+            embedded = self.word_embedding(instr).to(self.device)
+            _, hidden = self.instr_rnn(embedded)
+            return hidden[-1], embedded
 
         elif self.lang_model in ["bigru", "attgru"]:
             raise "Not implemented properly!"

@@ -94,12 +94,9 @@ class PPOAlgo(BaseAlgo):
         return total_loss
 
     def Attention_Over_Similarity_Vector(self, vector, temp=1):
-        print(vector)
         vector = torch.tensor(vector, dtype=float)
         vector = vector / temp
         attn_weights = F.softmax(vector, dim=0)
-        print(attn_weights.shape)
-        print(vector.shape)
         weighted_sum = torch.dot(attn_weights, vector)
         return weighted_sum
 
@@ -107,8 +104,6 @@ class PPOAlgo(BaseAlgo):
         transposed_matrix = matrix.T
         weighted_row = []
         weighted_column = []
-        print(matrix)
-        print(matrix.shape)
         for i in range(matrix.shape[0]):
             weighted_row.append(self.Attention_Over_Similarity_Vector(matrix[i], temp))
         for i in range(transposed_matrix.shape[0]):
@@ -116,8 +111,8 @@ class PPOAlgo(BaseAlgo):
                 self.Attention_Over_Similarity_Vector(transposed_matrix[i], temp)
             )
 
-        weighted_row = weighted_row.reshape(-1)
-        weighted_column = weighted_column.reshape(-1)
+        weighted_row = torch.tensor(weighted_row).reshape(-1)
+        weighted_column = torch.tensor(weighted_column).reshape(-1)
 
         row_score = self.Attention_Over_Similarity_Vector(weighted_row, temp)
         column_score = self.Attention_Over_Similarity_Vector(weighted_column, temp)
@@ -140,7 +135,6 @@ class PPOAlgo(BaseAlgo):
         being the added information. They are either (n_procs * n_frames_per_proc) 1D tensors or
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         """
-
         for _ in range(self.epochs):
             # Initialize log values
 
@@ -151,6 +145,63 @@ class PPOAlgo(BaseAlgo):
             log_grad_norms = []
 
             log_losses = []
+            
+            self.acmodel.reset_hiddens()
+            
+            ######################################################################
+            # X-CLIP loss
+            similarity_mx = torch.zeros((self.num_procs, self.num_procs))
+            video_matrix = torch.zeros(
+                (self.num_procs, self.num_frames_per_proc, self.acmodel.instr_dim)
+            )
+            text_matrix = torch.zeros(
+                (self.num_procs, exps.obs.instr.shape[1], self.acmodel.instr_dim)
+            )
+            video_global_embeddings = torch.zeros(
+                (self.num_procs, self.acmodel.instr_dim)
+            )
+            text_global_embeddings = torch.zeros(
+                (self.num_procs, self.acmodel.instr_dim)
+            )
+            # calculate each env(video) and instruction features
+            env_start_index = self._get_env_starting_indexes()
+            memory = exps.memory[env_start_index]
+            for i in range(self.num_frames_per_proc):
+                sb = exps[env_start_index + i]
+                model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
+                frame_embeddings = model_results["frame_embedding"]
+                if i == 0:
+                    token_embedding = model_results["token_embedding"]
+                    text_global_embeddings = model_results["instr_embedding"]
+                    text_matrix = token_embedding
+                video_matrix[:, i, :] = frame_embeddings
+            for i in range(self.num_procs):
+                video_global_embeddings[i] = torch.mean(video_matrix[i], dim=0)
+                # text_global_embeddings[i] = torch.mean(text_matrix[i], dim=0)
+            for i in range(self.num_procs):
+                for j in range(self.num_procs):
+                    frame_token_similarity = self.Attention_Over_Similarity_Matrix(
+                        torch.matmul(video_matrix[i], text_matrix[j].T)
+                    )
+                    text_frame_similarity = self.Attention_Over_Similarity_Vector(
+                        torch.matmul(video_matrix[i], text_global_embeddings[j])
+                    )
+                    video_token_similarity = self.Attention_Over_Similarity_Vector(
+                        torch.matmul(text_matrix[j], video_global_embeddings[i]).T
+                    )
+                    video_text_similarity = torch.matmul(
+                        video_global_embeddings[i].T, text_global_embeddings[j]
+                    )
+                    similarity_mx[i][j] = (
+                        frame_token_similarity
+                        + text_frame_similarity
+                        + video_token_similarity
+                        + video_text_similarity
+                    ) / 4
+            # calculate loss function
+            print(similarity_mx)
+            x_clip_loss = self.calculate_contrastive_loss(similarity_mx)
+            ######################################################################
 
             """
             For each epoch, we create int(total_frames / batch_size + 1) batches, each of size batch_size (except
@@ -169,71 +220,8 @@ class PPOAlgo(BaseAlgo):
                 batch_value_loss = 0
                 batch_loss = 0
 
-                self.acmodel.reset_hiddens()
-
-                ######################################################################
-                # X-CLIP loss
-
-                similarity_mx = torch.zeros((self.num_procs, self.num_procs))
-                video_matrix = torch.zeros(
-                    (self.num_procs, self.num_frames_per_proc, self.acmodel.instr_dim)
-                )
-                text_matrix = torch.zeros(
-                    (self.num_procs, exps.obs.instr.shape[1], self.acmodel.instr_dim)
-                )
-                video_global_embeddings = torch.zeros(
-                    (self.num_procs, self.acmodel.instr_dim)
-                )
-                text_global_embeddings = torch.zeros(
-                    (self.num_procs, self.acmodel.instr_dim)
-                )
-
-                # calculate each env(video) and instruction features
-                env_start_index = self._get_env_starting_indexes()
-                memory = exps.memory[env_start_index]
-                for i in range(self.num_frames_per_proc):
-                    sb = exps[env_start_index + i]
-                    model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
-                    frame_embeddings = model_results["frame_embedding"]
-                    if i == 0:
-                        text_embedding = model_results["text_embedding"]
-                        print(text_embedding.shape)
-                        print(text_matrix.shape)
-                        text_matrix = text_embedding
-
-                    video_matrix[:, i, :] = frame_embeddings
-
-                for i in range(self.num_procs):
-                    video_global_embeddings[i] = torch.mean(video_matrix[i], dim=0)
-                    text_global_embeddings[i] = torch.mean(text_matrix[i], dim=0)
-                print(similarity_mx.shape)
-                print(video_matrix.shape)
-                print(text_matrix.shape)
-                print(torch.matmul(video_matrix[i], text_matrix[j].T))
-                for i in range(self.num_procs):
-                    for j in range(self.num_procs):
-                        frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                            torch.matmul(video_matrix[i], text_matrix[j].T)
-                        )
-                        text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                            torch.matmul(video_matrix[i], text_global_embeddings[j])
-                        )
-                        video_token_similarity = self.Attention_Over_Similarity_Vector(
-                            torch.matmul(text_matrix[j], video_global_embeddings[i]).T
-                        )
-                        video_text_similarity = torch.matmul(
-                            video_global_embeddings[i].T, text_global_embeddings[j]
-                        )
-                        similarity_mx[i][j] = (
-                            frame_token_similarity
-                            + text_frame_similarity
-                            + video_token_similarity
-                            + video_text_similarity
-                        ) / 4
-
-                # calculate loss function
-                contrastive_loss = self.calculate_contrastive_loss(similarity_mx)
-                ######################################################################
+                # update batch loss with x-clip loss
+                batch_loss += x_clip_loss
 
                 # Initialize memory
 
@@ -296,9 +284,6 @@ class PPOAlgo(BaseAlgo):
                 batch_policy_loss /= self.recurrence
                 batch_value_loss /= self.recurrence
                 batch_loss /= self.recurrence
-
-                # update batch loss with contrastive loss
-                batch_loss += contrastive_loss
 
                 # Update actor-critic
 
