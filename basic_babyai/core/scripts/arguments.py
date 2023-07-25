@@ -96,7 +96,13 @@ class ArgumentParser(argparse.ArgumentParser):
                             help="clipping epsilon for PPO (default: 0.2)")
         self.add_argument("--ppo_epochs", type=int, default=4,
                             help="number of epochs for PPO (default: 4)")
-
+        
+        # Algo parameters (x-xlip)
+        self.add_argument("--x_clip_coef", type=float, default=1,
+                            help="coefficient for x-clip loss (default: 1.0)")
+        self.add_argument("--x_clip_temp", type=float, default=1,
+                            help="temperature parameter used in x-clip attention (default: 1.0)")
+        
         # NPS params
         self.add_argument("--in_dim", type=int, default=3)
         self.add_argument("--hidden_dim", type=int, default=3)

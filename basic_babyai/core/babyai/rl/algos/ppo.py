@@ -41,7 +41,13 @@ class PPOAlgo(BaseAlgo):
         use_compositional_split=False,
         compositional_test_splits=None,
         device=None,
+        
+        x_clip_coef=1,
+        x_clip_temp=1,
     ):
+        self.x_clip_coef = x_clip_coef
+        self.x_clip_temp = x_clip_temp
+        
         num_frames_per_proc = num_frames_per_proc or 128
 
         super().__init__(
@@ -145,6 +151,7 @@ class PPOAlgo(BaseAlgo):
             log_grad_norms = []
 
             log_losses = []
+            log_losses_x_clip = []
             
             self.acmodel.reset_hiddens()
             
@@ -177,11 +184,10 @@ class PPOAlgo(BaseAlgo):
                 video_matrix[:, i, :] = frame_embeddings
             for i in range(self.num_procs):
                 video_global_embeddings[i] = torch.mean(video_matrix[i], dim=0)
-                # text_global_embeddings[i] = torch.mean(text_matrix[i], dim=0)
             for i in range(self.num_procs):
                 for j in range(self.num_procs):
                     frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                        torch.matmul(video_matrix[i], text_matrix[j].T)
+                        torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip
                     )
                     text_frame_similarity = self.Attention_Over_Similarity_Vector(
                         torch.matmul(video_matrix[i], text_global_embeddings[j])
@@ -199,7 +205,7 @@ class PPOAlgo(BaseAlgo):
                         + video_text_similarity
                     ) / 4
             # calculate loss function
-            x_clip_loss = self.calculate_contrastive_loss(similarity_mx)
+            x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
             ######################################################################
 
             """
@@ -218,9 +224,6 @@ class PPOAlgo(BaseAlgo):
                 batch_policy_loss = 0
                 batch_value_loss = 0
                 batch_loss = 0
-
-                # update batch loss with x-clip loss
-                batch_loss += x_clip_loss
 
                 # Initialize memory
 
@@ -283,6 +286,9 @@ class PPOAlgo(BaseAlgo):
                 batch_policy_loss /= self.recurrence
                 batch_value_loss /= self.recurrence
                 batch_loss /= self.recurrence
+                
+                # Update batch loss with x-clip loss
+                batch_loss += x_clip_loss
 
                 # Update actor-critic
 
@@ -310,6 +316,7 @@ class PPOAlgo(BaseAlgo):
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm.item())
                 log_losses.append(batch_loss.item())
+                log_losses_x_clip.append(x_clip_loss)
 
         # Log some values
 
@@ -319,6 +326,7 @@ class PPOAlgo(BaseAlgo):
         logs["value_loss"] = numpy.mean(log_value_losses)
         logs["grad_norm"] = numpy.mean(log_grad_norms)
         logs["loss"] = numpy.mean(log_losses)
+        logs["x_clip_loss"] = numpy.mean(log_losses_x_clip)
 
         return logs
 

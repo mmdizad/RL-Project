@@ -177,7 +177,7 @@ def main():
                                  reshape_reward,
                                  use_compositional_split=args.use_compositional_split,
                                  compositional_test_splits=compositional_test_splits[args.env],
-                                 device=device)
+                                 device=device, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp)
     else:
         raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 
@@ -275,11 +275,11 @@ def main():
                     success_per_episode['mean'],
                     *num_frames_per_episode.values(),
                     logs["entropy"], logs["value"], logs["policy_loss"], logs["value_loss"],
-                    logs["loss"], logs["grad_norm"]]
+                    logs["loss"], logs["x_clip_loss"], logs["grad_norm"]]
 
             format_str = ("U {} | E {} | F {:06} | FPS {:04.0f} | D {} | R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | "
-                                                                                                                                                                 "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
-                                                                                                                                                                 "pL {: .3f} | vL {:.3f} | L {:.3f} | gN {:.3f} | ")
+             "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
+             "pL {: .3f} | vL {:.3f} | L {:.3f} | XL {:.3f} | gN {:.3f} | ")
             logger.info(format_str.format(*data))
             if args.tb:
                 assert len(header) == len(data)
