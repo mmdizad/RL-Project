@@ -9,6 +9,6 @@ python3 ../scripts/train_rl.py --env BabyAI-GoToSeqS5R2-v0 \
 --x_clip_temp 1.0 \
 --model "FiLM" --arch='expert_filmcnn' \
 --procs=16 --batch_size=1280 --frames_per_proc=80 --recurrence=20 \
---save_interval=500 \
+--save_interval=100 \
 --use_compositional_split 
 

@@ -305,15 +305,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
 
         x = self.critic(embedding)
         value = x.squeeze(1)
-        
-        
-        print(f'actor on cuda: {next(self.actor.parameters()).is_cuda}')
-        print(f'critic on cuda: {next(self.critic.parameters()).is_cuda}')
-        print(f'linear on cuda: {next(self.x_clip.parameters()).is_cuda}')
-        print(f'actor on cuda: {next(self.image_conv.parameters()).is_cuda}')
-        print(f'actor on cuda: {next(self.instr_rnn.parameters()).is_cuda}')
-        print(f'actor on cuda: {next(self.word_embedding.parameters()).is_cuda}')
-        sys.exit()
 
         return {
             "dist": dist,

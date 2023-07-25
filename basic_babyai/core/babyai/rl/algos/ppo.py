@@ -1,7 +1,6 @@
 import sys
 import numpy
 import torch
-import nvidia_smi
 import torch.nn as nn
 import torch.nn.functional as F
 
