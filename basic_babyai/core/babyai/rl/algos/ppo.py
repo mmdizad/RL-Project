@@ -1,6 +1,7 @@
 import sys
 import numpy
 import torch
+import nvidia_smi
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -80,50 +81,6 @@ class PPOAlgo(BaseAlgo):
         )
         self.batch_num = 0
 
-    def calculate_contrastive_loss(self, similarity_matrix):
-        v_2_t_loss = 0
-        t_2_v_loss = 0
-        transposed_similarity_matrix = similarity_matrix.T
-        log_softmax_row_wise = F.log_softmax(similarity_matrix, dim=1)
-        log_softmax_column_wise = F.log_softmax(transposed_similarity_matrix, dim=1)
-
-        v_2_t_loss = torch.trace(log_softmax_row_wise)
-
-        v_2_t_loss = v_2_t_loss / -log_softmax_row_wise.shape[0]
-
-        t_2_v_loss = torch.trace(log_softmax_column_wise)
-
-        t_2_v_loss = t_2_v_loss / -log_softmax_column_wise.shape[0]
-
-        total_loss = v_2_t_loss + t_2_v_loss
-
-        return total_loss
-
-    def Attention_Over_Similarity_Vector(self, vector, temp=1):
-        vector = torch.tensor(vector, dtype=float)
-        vector = vector / temp
-        attn_weights = F.softmax(vector, dim=0)
-        weighted_sum = torch.dot(attn_weights, vector)
-        return weighted_sum
-
-    def Attention_Over_Similarity_Matrix(self, matrix, temp=1):
-        transposed_matrix = matrix.T
-        weighted_row = []
-        weighted_column = []
-        for i in range(matrix.shape[0]):
-            weighted_row.append(self.Attention_Over_Similarity_Vector(matrix[i], temp))
-        for i in range(transposed_matrix.shape[0]):
-            weighted_column.append(
-                self.Attention_Over_Similarity_Vector(transposed_matrix[i], temp)
-            )
-
-        weighted_row = torch.tensor(weighted_row).reshape(-1)
-        weighted_column = torch.tensor(weighted_column).reshape(-1)
-
-        row_score = self.Attention_Over_Similarity_Vector(weighted_row, temp)
-        column_score = self.Attention_Over_Similarity_Vector(weighted_column, temp)
-        total_score = (row_score + column_score) / 2
-        return total_score
 
     def update_parameters(self):
         # Collect experiences
@@ -151,49 +108,47 @@ class PPOAlgo(BaseAlgo):
             log_grad_norms = []
 
             log_losses = []
-            log_losses_x_clip = []
+            x_clip_losses = []
             
             self.acmodel.reset_hiddens()
             
-            ######################################################################
+            #################################################################################################
             # X-CLIP loss
-            similarity_mx = torch.zeros((self.num_procs, self.num_procs))
+            similarity_mx = torch.zeros((self.num_procs, self.num_procs)).to(self.device)
             video_matrix = torch.zeros(
                 (self.num_procs, self.num_frames_per_proc, self.acmodel.instr_dim)
-            )
-            text_matrix = torch.zeros(
-                (self.num_procs, exps.obs.instr.shape[1], self.acmodel.instr_dim)
-            )
+            ).to(self.device)
             video_global_embeddings = torch.zeros(
                 (self.num_procs, self.acmodel.instr_dim)
-            )
-            text_global_embeddings = torch.zeros(
-                (self.num_procs, self.acmodel.instr_dim)
-            )
+            ).to(self.device)
             # calculate each env(video) and instruction features
             env_start_index = self._get_env_starting_indexes()
             memory = exps.memory[env_start_index]
             for i in range(self.num_frames_per_proc):
                 sb = exps[env_start_index + i]
                 model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
-                frame_embeddings = model_results["frame_embedding"]
                 if i == 0:
-                    token_embedding = model_results["token_embedding"]
+                    # get token and sentence embeddings
+                    text_matrix = model_results["token_embedding"]
+                    text_matrix = text_matrix.to(self.device)
                     text_global_embeddings = model_results["instr_embedding"]
-                    text_matrix = token_embedding
-                video_matrix[:, i, :] = frame_embeddings
+                    text_global_embeddings = text_global_embeddings.to(self.device)
+                # get frame embeddigns for a single frame
+                video_matrix[:, i, :] = model_results["frame_embedding"]
             for i in range(self.num_procs):
                 video_global_embeddings[i] = torch.mean(video_matrix[i], dim=0)
+                            
+            #calculate similarity matrix
             for i in range(self.num_procs):
                 for j in range(self.num_procs):
                     frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                        torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip
+                        torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
                     )
                     text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(video_matrix[i], text_global_embeddings[j])
+                        torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
                     )
                     video_token_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(text_matrix[j], video_global_embeddings[i]).T
+                        torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
                     )
                     video_text_similarity = torch.matmul(
                         video_global_embeddings[i].T, text_global_embeddings[j]
@@ -204,9 +159,17 @@ class PPOAlgo(BaseAlgo):
                         + video_token_similarity
                         + video_text_similarity
                     ) / 4
-            # calculate loss function
+            # calculate loss function and optimize 
+            
             x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
-            ######################################################################
+            self.optimizer.zero_grad()
+            x_clip_loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.acmodel.parameters(), self.max_grad_norm
+            )
+            self.optimizer.step()           
+            x_clip_losses.append(x_clip_loss.item())
+            #################################################################################################
 
             """
             For each epoch, we create int(total_frames / batch_size + 1) batches, each of size batch_size (except
@@ -286,9 +249,6 @@ class PPOAlgo(BaseAlgo):
                 batch_policy_loss /= self.recurrence
                 batch_value_loss /= self.recurrence
                 batch_loss /= self.recurrence
-                
-                # Update batch loss with x-clip loss
-                batch_loss += x_clip_loss
 
                 # Update actor-critic
 
@@ -309,14 +269,12 @@ class PPOAlgo(BaseAlgo):
                 self.optimizer.step()
 
                 # Update log values
-
                 log_entropies.append(batch_entropy)
                 log_values.append(batch_value)
                 log_policy_losses.append(batch_policy_loss)
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm.item())
                 log_losses.append(batch_loss.item())
-                log_losses_x_clip.append(x_clip_loss)
 
         # Log some values
 
@@ -326,7 +284,8 @@ class PPOAlgo(BaseAlgo):
         logs["value_loss"] = numpy.mean(log_value_losses)
         logs["grad_norm"] = numpy.mean(log_grad_norms)
         logs["loss"] = numpy.mean(log_losses)
-        logs["x_clip_loss"] = numpy.mean(log_losses_x_clip)
+        logs["x_clip_loss"] = numpy.mean(x_clip_losses)
+        
 
         return logs
 
@@ -355,3 +314,47 @@ class PPOAlgo(BaseAlgo):
             self.num_frames_per_proc * i for i in range(self.num_procs)
         ]
         return numpy.array(env_starting_indexes)
+    
+    def calculate_contrastive_loss(self, similarity_matrix):
+        v_2_t_loss = 0
+        t_2_v_loss = 0
+        transposed_similarity_matrix = similarity_matrix.T
+        log_softmax_row_wise = F.log_softmax(similarity_matrix, dim=1)
+        log_softmax_column_wise = F.log_softmax(transposed_similarity_matrix, dim=1)
+
+        v_2_t_loss = torch.trace(log_softmax_row_wise)
+
+        v_2_t_loss = v_2_t_loss / -log_softmax_row_wise.shape[0]
+
+        t_2_v_loss = torch.trace(log_softmax_column_wise)
+
+        t_2_v_loss = t_2_v_loss / -log_softmax_column_wise.shape[0]
+
+        total_loss = v_2_t_loss + t_2_v_loss
+
+        return total_loss
+
+    def Attention_Over_Similarity_Vector(self, vector, temp=1):
+        vector = vector / temp
+        attn_weights = F.softmax(vector, dim=0)
+        weighted_sum = torch.dot(attn_weights, vector)
+        return weighted_sum
+
+    def Attention_Over_Similarity_Matrix(self, matrix, temp=1):
+        transposed_matrix = matrix.T
+        weighted_row = []
+        weighted_column = []
+        for i in range(matrix.shape[0]):
+            weighted_row.append(self.Attention_Over_Similarity_Vector(matrix[i], temp))
+        for i in range(transposed_matrix.shape[0]):
+            weighted_column.append(
+                self.Attention_Over_Similarity_Vector(transposed_matrix[i], temp)
+            )
+
+        weighted_row = torch.tensor(weighted_row).reshape(-1)
+        weighted_column = torch.tensor(weighted_column).reshape(-1)
+
+        row_score = self.Attention_Over_Similarity_Vector(weighted_row, temp)
+        column_score = self.Attention_Over_Similarity_Vector(weighted_column, temp)
+        total_score = (row_score + column_score) / 2
+        return total_score
