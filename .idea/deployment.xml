@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="PublishConfigData" autoUpload="Always" serverName="nh_intern1@172.27.48.18:22" remoteFilesAllowedToDisappearOnAutoupload="false">
+    <serverData>
+      <paths name="nh_intern1@172.27.48.18:22">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/nh_intern1/basic_babyai" local="$PROJECT_DIR$" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath path="/home/nh_intern1/basic_babyai/requirements.txt" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
+    </serverData>
+    <option name="myAutoUpload" value="ALWAYS" />
+  </component>
+</project>
