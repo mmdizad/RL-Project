@@ -152,7 +152,6 @@ class BaseAlgo(ABC):
             action = dist.sample()
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
 
-
             if self.aux_info:
                 env_info = self.aux_info_collector.process(env_info)
                 # env_info = self.process_aux_info(env_info)
