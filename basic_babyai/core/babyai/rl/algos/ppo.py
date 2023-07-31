@@ -1,5 +1,3 @@
-import sys
-import time
 import numpy
 import torch
 import torch.nn as nn
@@ -114,90 +112,79 @@ class PPOAlgo(BaseAlgo):
             
             self.acmodel.reset_hiddens()
             
-            # start_time = time.time()
-            
             #################################################################################################
             # Preprocessing
-            completed_videos = ((exps.mask == 0).nonzero()).cpu().detach().numpy()[:, 0]
+            completed_videos = ((exps.mask == 0).nonzero()).detach().clone().cpu().numpy()[:, 0]
             video_info = numpy.array([[i // self.num_frames_per_proc, i % self.num_frames_per_proc] for i in completed_videos])
-            num_samples = video_info.shape[0]
-            video_idx = video_info[:, 0]
-            video_len = video_info[:, 1]
-            max_len = numpy.max(video_len) + 1
-            # X-CLIP loss
-            similarity_mx = torch.zeros((num_samples, num_samples)).to(self.device)
-            video_matrix = torch.zeros(
-                (num_samples, max_len, self.acmodel.instr_dim)
-            ).to(self.device)
-            video_global_embeddings = torch.zeros(
-                (num_samples, self.acmodel.instr_dim)
-            ).to(self.device)
-            text_matrix = torch.zeros(
-                (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim)
-            ).to(self.device)
-            text_global_embeddings = torch.zeros(
-                (num_samples, self.acmodel.instr_dim)
-            ).to(self.device)
-            # build feature matrices
-            env_start_index = video_idx * self.num_frames_per_proc
-            all_indexed = torch.tensor(env_start_index) + torch.arange(max_len)[:, None]
-            all_indexed = all_indexed.T.reshape(-1)
-            memory = exps.memory[all_indexed]
-            
-            sb = exps[all_indexed]
-            model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
-            video_matrix = model_results["frame_embedding"].reshape(num_samples, max_len, self.acmodel.instr_dim)
-            text_idx = numpy.arange(num_samples) * max_len
-            text_matrix = model_results["token_embedding"][text_idx]
-            text_global_embeddings = model_results["instr_embedding"][text_idx]     
-            
-            # pad videos
-            for i in range(len(video_len)):
-                video_matrix[:, video_len[i]+1:, :] = 0
-                
-            for i in range(num_samples):
-                video_global_embeddings[i] = torch.mean(video_matrix[i], dim=0)
-            
-            # print(f'calculate embeddings: {time.time() - start_time}')
-            # start_time = time.time()
-                            
-            #calculate similarity matrix
-            for i in range(num_samples):
-                for j in range(num_samples):
-                    frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                        torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
-                    )
-                    text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
-                    )
-                    video_token_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
-                    )
-                    video_text_similarity = torch.matmul(
-                        video_global_embeddings[i].T, text_global_embeddings[j]
-                    )
-                    similarity_mx[i][j] = (
-                        frame_token_similarity
-                        + text_frame_similarity
-                        + video_token_similarity
-                        + video_text_similarity
-                    ) / 4
-                    
-            # print(f'calculate matrix: {time.time() - start_time}')
-            # start_time = time.time()
-            
-            # calculate loss function and optimize 
-            x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
-            x_clip_losses.append(x_clip_loss.item())
-            self.optimizer.zero_grad()
-            x_clip_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.acmodel.parameters(), self.max_grad_norm
-            )
-            self.optimizer.step() 
-            
-            # print(f'step time: {time.time() - start_time}')
-            # start_time = time.time()          
+            if video_info.size != 0:
+                num_samples = video_info.shape[0]
+                video_idx = video_info[:, 0]
+                video_len = video_info[:, 1]
+                max_len = numpy.max(video_len) + 1
+                # X-CLIP loss
+                similarity_mx = torch.zeros((num_samples, num_samples)).to(self.device)
+                # video_matrix = torch.zeros(
+                #     (num_samples, max_len, self.acmodel.instr_dim)
+                # ).to(self.device)
+                video_global_embeddings = torch.zeros(
+                    (num_samples, self.acmodel.instr_dim)
+                ).to(self.device)
+                # text_matrix = torch.zeros(
+                #     (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim)
+                # ).to(self.device)
+                # text_global_embeddings = torch.zeros(
+                #     (num_samples, self.acmodel.instr_dim)
+                # ).to(self.device)
+                # build feature matrices
+                env_start_index = video_idx * self.num_frames_per_proc
+                all_indexed = torch.tensor(env_start_index) + torch.arange(max_len)[:, None]
+                all_indexed = all_indexed.T.reshape(-1)
+                memory = exps.memory[all_indexed]
+
+                sub = exps[all_indexed]
+                model_res = self.acmodel(sub.obs, memory * sub.mask, mask=sub.mask)
+                video_matrix = model_res["frame_embedding"].reshape(num_samples, max_len, self.acmodel.instr_dim)
+                text_idx = numpy.arange(num_samples) * max_len
+                text_matrix = model_res["token_embedding"][text_idx]
+                text_global_embeddings = model_res["instr_embedding"][text_idx]     
+                video_global_embeddings = torch.mean(video_matrix, dim=1)
+
+                # pad videos
+                for i in range(len(video_len)):
+                    video_matrix[:, video_len[i]+1:, :] = 0
+
+
+                #calculate similarity matrix
+                for i in range(num_samples):
+                    for j in range(num_samples):
+                        frame_token_similarity = self.Attention_Over_Similarity_Matrix(
+                            torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
+                        )
+                        text_frame_similarity = self.Attention_Over_Similarity_Vector(
+                            torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
+                        )
+                        video_token_similarity = self.Attention_Over_Similarity_Vector(
+                            torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
+                        )
+                        video_text_similarity = torch.matmul(
+                            video_global_embeddings[i].T, text_global_embeddings[j]
+                        )
+                        similarity_mx[i][j] = (
+                            frame_token_similarity
+                            + text_frame_similarity
+                            + video_token_similarity
+                            + video_text_similarity
+                        ) / 4
+
+
+                # calculate loss function and optimize 
+                x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
+                self.optimizer.zero_grad()
+                x_clip_loss.backward()
+                self.optimizer.step()
+                x_clip_losses.append(x_clip_loss.item())
+                del x_clip_loss, model_res
+            torch.cuda.empty_cache()         
             #################################################################################################
 
             """
@@ -303,12 +290,7 @@ class PPOAlgo(BaseAlgo):
                 log_policy_losses.append(batch_policy_loss)
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm.item())
-                log_losses.append(batch_loss.item())
-                
-            # print(f'original time: {time.time() - start_time}')
-            # print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
-            
-            
+                log_losses.append(batch_loss.item())          
 
         # Log some values
         logs["entropy"] = numpy.mean(log_entropies)
@@ -341,12 +323,6 @@ class PPOAlgo(BaseAlgo):
         ]
 
         return batches_starting_indexes
-
-    def _get_env_starting_indexes(self):
-        env_starting_indexes = [
-            self.num_frames_per_proc * i for i in range(self.num_procs)
-        ]
-        return numpy.array(env_starting_indexes)
     
     def calculate_contrastive_loss(self, similarity_matrix):
         v_2_t_loss = 0
