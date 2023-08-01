@@ -1,3 +1,4 @@
+import sys
 import numpy
 import torch
 import torch.nn as nn
@@ -78,6 +79,8 @@ class PPOAlgo(BaseAlgo):
             self.acmodel.parameters(), lr, (beta1, beta2), eps=adam_eps
         )
         self.batch_num = 0
+        
+        self.loss_fn = ContrastiveLoss()
 
 
     def update_parameters(self):
@@ -119,16 +122,17 @@ class PPOAlgo(BaseAlgo):
             video_info = numpy.array([[i // self.num_frames_per_proc, i % self.num_frames_per_proc] for i in completed_videos])
             
             num_samples = 0
-            video_idx = numpy.array([])
-            video_len = numpy.array([])
+            video_idx = numpy.array([], dtype=int)
+            video_len = numpy.array([], dtype=int)
             max_len = 0
             
-            if video_info.size != 0:  
-                num_samples = video_info.shape[0]
-                video_idx = video_info[:, 0]
-                video_len = video_info[:, 1]
+            if video_info.size != 0:
+                for idx in video_info:
+                    if idx[0] not in video_idx:
+                        video_idx = numpy.append(video_idx, idx[0])
+                        video_len = numpy.append(video_len, idx[1])
+                num_samples = video_idx.shape[0]
                 max_len = numpy.max(video_len) + 1
-            
             # X-CLIP loss
             similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
             # video_matrix = torch.zeros(
@@ -182,12 +186,34 @@ class PPOAlgo(BaseAlgo):
                         + video_token_similarity
                         + video_text_similarity
                     ) / 4
-            # calculate loss function and optimize 
-            x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
+            print(similarity_mx.dtype)
+            print(video_matrix.dtype)
+            print(frame_token_similarity.dtype)
+            sys.exit()
+            # calculate loss function and optimize
+            x_clip_loss = self.loss_fn(similarity_mx) * self.x_clip_coef
             self.optimizer.zero_grad()
             x_clip_loss.backward()
+            print("after backward")    
+            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
+            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
             self.optimizer.step()
-            x_clip_losses.append(x_clip_loss.item()) 
+            print("after step")    
+            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
+            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
+            x_clip_losses.append(x_clip_loss.detach().cpu().item())
+            print("after append") 
+            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
+            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
+            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
+            if torch.cuda.max_memory_reserved(0)/1024/1024/1024 > 6:
+                sys.exit()
+            print("$" * 50)
             ################################################################################################
             """
             For each epoch, we create int(total_frames / batch_size + 1) batches, each of size batch_size (except
@@ -285,14 +311,19 @@ class PPOAlgo(BaseAlgo):
                     self.acmodel.parameters(), self.max_grad_norm
                 )
                 self.optimizer.step()
-
+		
                 # Update log values
                 log_entropies.append(batch_entropy)
                 log_values.append(batch_value)
                 log_policy_losses.append(batch_policy_loss)
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm.item())
-                log_losses.append(batch_loss.item())          
+                log_losses.append(batch_loss.item())
+                  
+            # print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
+            # print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
+            # print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
+            # print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))          
 
         # Log some values
         logs["entropy"] = numpy.mean(log_entropies)
@@ -326,25 +357,6 @@ class PPOAlgo(BaseAlgo):
 
         return batches_starting_indexes
     
-    def calculate_contrastive_loss(self, similarity_matrix):
-        v_2_t_loss = 0
-        t_2_v_loss = 0
-        transposed_similarity_matrix = similarity_matrix.T
-        log_softmax_row_wise = F.log_softmax(similarity_matrix, dim=1)
-        log_softmax_column_wise = F.log_softmax(transposed_similarity_matrix, dim=1)
-
-        v_2_t_loss = torch.trace(log_softmax_row_wise)
-
-        v_2_t_loss = v_2_t_loss / -log_softmax_row_wise.shape[0]
-
-        t_2_v_loss = torch.trace(log_softmax_column_wise)
-
-        t_2_v_loss = t_2_v_loss / -log_softmax_column_wise.shape[0]
-
-        total_loss = v_2_t_loss + t_2_v_loss
-
-        return total_loss
-
     def Attention_Over_Similarity_Vector(self, vector, temp=1):
         vector_tmp = vector / temp
         attn_weights = F.softmax(vector_tmp, dim=0)
@@ -364,3 +376,25 @@ class PPOAlgo(BaseAlgo):
         weighted_row_sum = self.Attention_Over_Similarity_Vector(row_sum, temp)
 
         return (weighted_col_sum + weighted_row_sum) / 2
+
+
+class ContrastiveLoss(nn.Module):
+    def __init__(self):
+        super(ContrastiveLoss, self).__init__()
+
+    def forward(self, similarity_matrix):
+        transposed_similarity_matrix = similarity_matrix.T
+        log_softmax_row_wise = F.log_softmax(similarity_matrix, dim=1)
+        log_softmax_column_wise = F.log_softmax(transposed_similarity_matrix, dim=1)
+
+        v_2_t_loss = torch.trace(log_softmax_row_wise)
+
+        v_2_t_loss = v_2_t_loss / -log_softmax_row_wise.shape[0]
+
+        t_2_v_loss = torch.trace(log_softmax_column_wise)
+
+        t_2_v_loss = t_2_v_loss / -log_softmax_column_wise.shape[0]
+
+        total_loss = v_2_t_loss + t_2_v_loss
+
+        return total_loss
