@@ -139,73 +139,76 @@ class PPOAlgo(BaseAlgo):
                 max_len = numpy.max(video_len) + 1
 
             # X-CLIP loss
-            similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
-            video_matrix = torch.zeros(
-                (num_samples, max_len, self.acmodel.instr_dim), device=self.device, requires_grad=True
-            )
-            # video_global_embeddings = torch.zeros(
-            #     (num_samples, self.acmodel.instr_dim), device=self.device
-            # )
+            if num_samples > 1:
+                similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
+                video_matrix = torch.zeros(
+                    (num_samples, max_len, self.acmodel.instr_dim), device=self.device, requires_grad=True
+                )
+                # video_global_embeddings = torch.zeros(
+                #     (num_samples, self.acmodel.instr_dim), device=self.device
+                # )
 
-            # text_matrix = torch.zeros(
-            #     (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device
-            # )
-            # text_global_embeddings = torch.zeros(
-            #     (num_samples, self.acmodel.instr_dim), device=self.device
-            # )
-            # build feature matrices
-            env_start_index = self._get_env_starting_indexes()
-            memory = exps.memory[env_start_index]            
-            for i in range(max_len):
-                sb = exps[env_start_index + i]
-                model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
-                if i == 0:
+                text_matrix = torch.zeros(
+                    (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device, requires_grad=True
+                )
+                text_global_embeddings = torch.zeros(
+                    (num_samples, self.acmodel.instr_dim), device=self.device, requires_grad=True
+                )
+                # build feature matrices
+                env_start_index = video_idx * self.num_frames_per_proc 
+                for i in range(len(env_start_index)):
+                    idx = env_start_index[i]
+                    env_idx = range(idx, idx + max_len)
+                    sb = exps[env_idx]
+                    model_results = self.acmodel(sb.obs, sb.memory * sb.mask, mask=sb.mask)
                     # get token and sentence embeddings
-                    text_matrix = model_results["token_embedding"][video_idx]
-                    text_global_embeddings = model_results["instr_embedding"][video_idx]
-                # get frame embeddigns for a single frame
-                video_matrix[:, i, :] = model_results["frame_embedding"][video_idx]
+                    text_matrix[i] = model_results["token_embedding"][0]
+                    text_global_embeddings[i] = model_results["instr_embedding"][0]
+                    # get frame embeddigns for a single frame
+                    video_matrix[i] = model_results["frame_embedding"]
 
-            
-            for i in range(len(video_len)):
-                video_matrix[:, video_len[i]+1:, :] = 0
-                
-            video_global_embeddings = torch.mean(video_matrix[i], dim=1)
-            
-                            
-            #calculate similarity matrix
-            for i in range(num_samples):
-                for j in range(num_samples):
-                    frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                        torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
-                    )
-                    text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
-                    )
-                    video_token_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
-                    )
-                    video_text_similarity = torch.matmul(
-                        video_global_embeddings[i].T, text_global_embeddings[j]
-                    )
-                    similarity_mx[i][j] = (
-                        frame_token_similarity
-                        + text_frame_similarity
-                        + video_token_similarity
-                        + video_text_similarity
-                    ) / 4
-            # calculate loss function and optimize 
-            
-            x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
-            x_clip_losses.append(x_clip_loss.detach().item())
-            self.optimizer.zero_grad()
-            x_clip_loss.backward()
-            torch.nn.utils.clip_grad_norm_(
-                self.acmodel.parameters(), self.max_grad_norm
-            )
-            self.optimizer.step()       
-            if ep == 0:    
-                print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))    
+                for i in range(len(video_len)):
+                    video_matrix[:, video_len[i]+1:, :] = 0
+                video_global_embeddings = torch.mean(video_matrix, dim=1)
+                print(video_matrix.shape)
+                print(text_matrix.shape)
+                print(text_global_embeddings.shape)
+                print(video_global_embeddings.shape)
+
+
+                #calculate similarity matrix
+                for i in range(num_samples):
+                    for j in range(num_samples):
+                        frame_token_similarity = self.Attention_Over_Similarity_Matrix(
+                            torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
+                        )
+                        text_frame_similarity = self.Attention_Over_Similarity_Vector(
+                            torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
+                        )
+                        video_token_similarity = self.Attention_Over_Similarity_Vector(
+                            torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
+                        )
+                        video_text_similarity = torch.matmul(
+                            video_global_embeddings[i].T, text_global_embeddings[j]
+                        )
+                        similarity_mx[i][j] = (
+                            frame_token_similarity
+                            + text_frame_similarity
+                            + video_token_similarity
+                            + video_text_similarity
+                        ) / 4
+                # calculate loss function and optimize 
+
+                x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
+                x_clip_losses.append(x_clip_loss.detach().item())
+                self.optimizer.zero_grad()
+                x_clip_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.acmodel.parameters(), self.max_grad_norm
+                )
+                self.optimizer.step()       
+                if ep == 0:    
+                    print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))    
             #################################################################################################
 
             """
@@ -345,12 +348,6 @@ class PPOAlgo(BaseAlgo):
         ]
 
         return batches_starting_indexes
-
-    def _get_env_starting_indexes(self):
-        env_starting_indexes = [
-            self.num_frames_per_proc * i for i in range(self.num_procs)
-        ]
-        return numpy.array(env_starting_indexes)
     
     def calculate_contrastive_loss(self, similarity_matrix):
         v_2_t_loss = 0
@@ -372,26 +369,21 @@ class PPOAlgo(BaseAlgo):
         return total_loss
 
     def Attention_Over_Similarity_Vector(self, vector, temp=1):
-        vector = vector / temp
-        attn_weights = F.softmax(vector, dim=0)
+        vector_tmp = vector / temp
+        attn_weights = F.softmax(vector_tmp, dim=0)
         weighted_sum = torch.dot(attn_weights, vector)
         return weighted_sum
 
     def Attention_Over_Similarity_Matrix(self, matrix, temp=1):
-        transposed_matrix = matrix.T
-        weighted_row = []
-        weighted_column = []
-        for i in range(matrix.shape[0]):
-            weighted_row.append(self.Attention_Over_Similarity_Vector(matrix[i], temp))
-        for i in range(transposed_matrix.shape[0]):
-            weighted_column.append(
-                self.Attention_Over_Similarity_Vector(transposed_matrix[i], temp)
-            )
+        matrix_tmp = matrix / temp
+        attn_col_weights = F.softmax(matrix_tmp, dim=0)
+        col_product = torch.mul(attn_col_weights, matrix)
+        col_sum = torch.sum(col_product, dim=0)
+        weighted_col_sum = self.Attention_Over_Similarity_Vector(col_sum, temp)
 
-        weighted_row = torch.tensor(weighted_row).reshape(-1)
-        weighted_column = torch.tensor(weighted_column).reshape(-1)
+        attn_row_weights = F.softmax(matrix_tmp, dim=1)
+        row_product = torch.mul(attn_row_weights, matrix)
+        row_sum = torch.sum(row_product, dim=1).reshape(-1)
+        weighted_row_sum = self.Attention_Over_Similarity_Vector(row_sum, temp)
 
-        row_score = self.Attention_Over_Similarity_Vector(weighted_row, temp)
-        column_score = self.Attention_Over_Similarity_Vector(weighted_column, temp)
-        total_score = (row_score + column_score) / 2
-        return total_score
+        return (weighted_col_sum + weighted_row_sum) / 2
