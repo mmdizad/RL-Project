@@ -1,3 +1,4 @@
+from os import device_encoding
 import sys
 import numpy
 import torch
@@ -79,8 +80,6 @@ class PPOAlgo(BaseAlgo):
             self.acmodel.parameters(), lr, (beta1, beta2), eps=adam_eps
         )
         self.batch_num = 0
-        
-        self.loss_fn = ContrastiveLoss()
 
 
     def update_parameters(self):
@@ -99,6 +98,11 @@ class PPOAlgo(BaseAlgo):
         being the added information. They are either (n_procs * n_frames_per_proc) 1D tensors or
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         """
+        
+        # for i in range(self.num_procs):
+        #     print(exps.reward[i * self.num_frames_per_proc: (i + 1) * self.num_frames_per_proc])
+        #     print(exps.mask[i * self.num_frames_per_proc: (i + 1) * self.num_frames_per_proc].reshape(-1))
+        #     print()
             
                 
         for ep in range(self.epochs):
@@ -133,38 +137,42 @@ class PPOAlgo(BaseAlgo):
                         video_len = numpy.append(video_len, idx[1])
                 num_samples = video_idx.shape[0]
                 max_len = numpy.max(video_len) + 1
+
             # X-CLIP loss
             similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
-            # video_matrix = torch.zeros(
-            #     (num_samples, max_len, self.acmodel.instr_dim)
-            # ).to(self.device)
+            video_matrix = torch.zeros(
+                (num_samples, max_len, self.acmodel.instr_dim), device=self.device, requires_grad=True
+            )
             # video_global_embeddings = torch.zeros(
             #     (num_samples, self.acmodel.instr_dim), device=self.device
             # )
+
             # text_matrix = torch.zeros(
-            #     (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim)
-            # ).to(self.device)
+            #     (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device
+            # )
             # text_global_embeddings = torch.zeros(
-            #     (num_samples, self.acmodel.instr_dim)
-            # ).to(self.device)
-            
+            #     (num_samples, self.acmodel.instr_dim), device=self.device
+            # )
             # build feature matrices
-            env_start_index = video_idx * self.num_frames_per_proc
-            all_indices = numpy.array(env_start_index) + numpy.arange(max_len)[:, None]
-            all_indices = all_indices.T.reshape(-1)
-            mem = exps.memory[all_indices]
-            batch = exps[all_indices]
-            output = self.acmodel(batch.obs, mem * batch.mask, mask=batch.mask)
-            video_matrix = output["frame_embedding"].reshape(num_samples, max_len, self.acmodel.instr_dim)
-            text_idx = numpy.arange(num_samples) * max_len
-            text_matrix = output["token_embedding"][text_idx]
-            text_global_embeddings = output["instr_embedding"][text_idx]
+            env_start_index = self._get_env_starting_indexes()
+            memory = exps.memory[env_start_index]            
+            for i in range(max_len):
+                sb = exps[env_start_index + i]
+                model_results = self.acmodel(sb.obs, memory * sb.mask, mask=sb.mask)
+                if i == 0:
+                    # get token and sentence embeddings
+                    text_matrix = model_results["token_embedding"][video_idx]
+                    text_global_embeddings = model_results["instr_embedding"][video_idx]
+                # get frame embeddigns for a single frame
+                video_matrix[:, i, :] = model_results["frame_embedding"][video_idx]
+
             
-            # pad videos
             for i in range(len(video_len)):
-                video_matrix[:, video_len[i]+1:, :] = 0 
-            video_global_embeddings = torch.mean(video_matrix, dim=1)
+                video_matrix[:, video_len[i]+1:, :] = 0
+                
+            video_global_embeddings = torch.mean(video_matrix[i], dim=1)
             
+                            
             #calculate similarity matrix
             for i in range(num_samples):
                 for j in range(num_samples):
@@ -186,35 +194,20 @@ class PPOAlgo(BaseAlgo):
                         + video_token_similarity
                         + video_text_similarity
                     ) / 4
-            print(similarity_mx.dtype)
-            print(video_matrix.dtype)
-            print(frame_token_similarity.dtype)
-            sys.exit()
-            # calculate loss function and optimize
-            x_clip_loss = self.loss_fn(similarity_mx) * self.x_clip_coef
+            # calculate loss function and optimize 
+            
+            x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
+            x_clip_losses.append(x_clip_loss.detach().item())
             self.optimizer.zero_grad()
             x_clip_loss.backward()
-            print("after backward")    
-            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
-            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
-            self.optimizer.step()
-            print("after step")    
-            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
-            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
-            x_clip_losses.append(x_clip_loss.detach().cpu().item())
-            print("after append") 
-            print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
-            print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
-            print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))
-            if torch.cuda.max_memory_reserved(0)/1024/1024/1024 > 6:
-                sys.exit()
-            print("$" * 50)
-            ################################################################################################
+            torch.nn.utils.clip_grad_norm_(
+                self.acmodel.parameters(), self.max_grad_norm
+            )
+            self.optimizer.step()       
+            if ep == 0:    
+                print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))    
+            #################################################################################################
+
             """
             For each epoch, we create int(total_frames / batch_size + 1) batches, each of size batch_size (except
             maybe the last one). Each batch is divided into sub-batches of size recurrence (frames are contiguous in
@@ -311,7 +304,7 @@ class PPOAlgo(BaseAlgo):
                     self.acmodel.parameters(), self.max_grad_norm
                 )
                 self.optimizer.step()
-		
+
                 # Update log values
                 log_entropies.append(batch_entropy)
                 log_values.append(batch_value)
@@ -319,13 +312,9 @@ class PPOAlgo(BaseAlgo):
                 log_value_losses.append(batch_value_loss)
                 log_grad_norms.append(grad_norm.item())
                 log_losses.append(batch_loss.item())
-                  
-            # print("torch.cuda.memory_allocated: %fGB"%(torch.cuda.memory_allocated(0)/1024/1024/1024))
-            # print("torch.cuda.memory_reserved: %fGB"%(torch.cuda.memory_reserved(0)/1024/1024/1024))
-            # print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))
-            # print("torch.cuda.max_memory_allocated: %fGB"%(torch.cuda.max_memory_allocated(0)/1024/1024/1024))          
 
         # Log some values
+
         logs["entropy"] = numpy.mean(log_entropies)
         logs["value"] = numpy.mean(log_values)
         logs["policy_loss"] = numpy.mean(log_policy_losses)
@@ -356,33 +345,16 @@ class PPOAlgo(BaseAlgo):
         ]
 
         return batches_starting_indexes
+
+    def _get_env_starting_indexes(self):
+        env_starting_indexes = [
+            self.num_frames_per_proc * i for i in range(self.num_procs)
+        ]
+        return numpy.array(env_starting_indexes)
     
-    def Attention_Over_Similarity_Vector(self, vector, temp=1):
-        vector_tmp = vector / temp
-        attn_weights = F.softmax(vector_tmp, dim=0)
-        weighted_sum = torch.dot(attn_weights, vector)
-        return weighted_sum
-
-    def Attention_Over_Similarity_Matrix(self, matrix, temp=1):
-        matrix_tmp = matrix / temp
-        attn_col_weights = F.softmax(matrix_tmp, dim=0)
-        col_product = torch.mul(attn_col_weights, matrix)
-        col_sum = torch.sum(col_product, dim=0)
-        weighted_col_sum = self.Attention_Over_Similarity_Vector(col_sum, temp)
-
-        attn_row_weights = F.softmax(matrix_tmp, dim=1)
-        row_product = torch.mul(attn_row_weights, matrix)
-        row_sum = torch.sum(row_product, dim=1)
-        weighted_row_sum = self.Attention_Over_Similarity_Vector(row_sum, temp)
-
-        return (weighted_col_sum + weighted_row_sum) / 2
-
-
-class ContrastiveLoss(nn.Module):
-    def __init__(self):
-        super(ContrastiveLoss, self).__init__()
-
-    def forward(self, similarity_matrix):
+    def calculate_contrastive_loss(self, similarity_matrix):
+        v_2_t_loss = 0
+        t_2_v_loss = 0
         transposed_similarity_matrix = similarity_matrix.T
         log_softmax_row_wise = F.log_softmax(similarity_matrix, dim=1)
         log_softmax_column_wise = F.log_softmax(transposed_similarity_matrix, dim=1)
@@ -398,3 +370,28 @@ class ContrastiveLoss(nn.Module):
         total_loss = v_2_t_loss + t_2_v_loss
 
         return total_loss
+
+    def Attention_Over_Similarity_Vector(self, vector, temp=1):
+        vector = vector / temp
+        attn_weights = F.softmax(vector, dim=0)
+        weighted_sum = torch.dot(attn_weights, vector)
+        return weighted_sum
+
+    def Attention_Over_Similarity_Matrix(self, matrix, temp=1):
+        transposed_matrix = matrix.T
+        weighted_row = []
+        weighted_column = []
+        for i in range(matrix.shape[0]):
+            weighted_row.append(self.Attention_Over_Similarity_Vector(matrix[i], temp))
+        for i in range(transposed_matrix.shape[0]):
+            weighted_column.append(
+                self.Attention_Over_Similarity_Vector(transposed_matrix[i], temp)
+            )
+
+        weighted_row = torch.tensor(weighted_row).reshape(-1)
+        weighted_column = torch.tensor(weighted_column).reshape(-1)
+
+        row_score = self.Attention_Over_Similarity_Vector(weighted_row, temp)
+        column_score = self.Attention_Over_Similarity_Vector(weighted_column, temp)
+        total_score = (row_score + column_score) / 2
+        return total_score
