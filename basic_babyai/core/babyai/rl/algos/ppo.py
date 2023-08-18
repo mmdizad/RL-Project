@@ -203,12 +203,7 @@ class PPOAlgo(BaseAlgo):
                 x_clip_losses.append(x_clip_loss.detach().item())
                 self.optimizer.zero_grad()
                 x_clip_loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.acmodel.parameters(), self.max_grad_norm
-                )
-                self.optimizer.step()       
-                if ep == 0:    
-                    print("torch.cuda.max_memory_reserved: %fGB"%(torch.cuda.max_memory_reserved(0)/1024/1024/1024))    
+                self.optimizer.step()          
             #################################################################################################
 
             """
