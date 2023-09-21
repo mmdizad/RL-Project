@@ -282,7 +282,6 @@ class ACModel(nn.Module, babyai.rl.RecurrentACModel):
                 memory[:, self.semi_memory_size :],
             )
             hidden = self.memory_rnn(x, hidden)
-
             embedding = hidden[0]
             memory = torch.cat(hidden, dim=1)
         else:

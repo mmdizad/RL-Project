@@ -99,13 +99,7 @@ class PPOAlgo(BaseAlgo):
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         """
         
-        # for i in range(self.num_procs):
-        #     print(exps.reward[i * self.num_frames_per_proc: (i + 1) * self.num_frames_per_proc])
-        #     print(exps.mask[i * self.num_frames_per_proc: (i + 1) * self.num_frames_per_proc].reshape(-1))
-        #     print()
-            
-                
-        for ep in range(self.epochs):
+        for _ in range(self.epochs):
             # Initialize log values
 
             log_entropies = []
@@ -142,17 +136,17 @@ class PPOAlgo(BaseAlgo):
             if num_samples > 1:
                 similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
                 video_matrix = torch.zeros(
-                    (num_samples, max_len, self.acmodel.instr_dim), device=self.device, requires_grad=True
+                    (num_samples, max_len, self.acmodel.instr_dim), device=self.device
                 )
                 # video_global_embeddings = torch.zeros(
                 #     (num_samples, self.acmodel.instr_dim), device=self.device
                 # )
 
                 text_matrix = torch.zeros(
-                    (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device, requires_grad=True
+                    (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device
                 )
                 text_global_embeddings = torch.zeros(
-                    (num_samples, self.acmodel.instr_dim), device=self.device, requires_grad=True
+                    (num_samples, self.acmodel.instr_dim), device=self.device
                 )
                 # build feature matrices
                 env_start_index = video_idx * self.num_frames_per_proc 
@@ -170,11 +164,6 @@ class PPOAlgo(BaseAlgo):
                 for i in range(len(video_len)):
                     video_matrix[:, video_len[i]+1:, :] = 0
                 video_global_embeddings = torch.mean(video_matrix, dim=1)
-                print(video_matrix.shape)
-                print(text_matrix.shape)
-                print(text_global_embeddings.shape)
-                print(video_global_embeddings.shape)
-
 
                 #calculate similarity matrix
                 for i in range(num_samples):
@@ -198,7 +187,6 @@ class PPOAlgo(BaseAlgo):
                             + video_text_similarity
                         ) / 4
                 # calculate loss function and optimize 
-
                 x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
                 x_clip_losses.append(x_clip_loss.detach().item())
                 self.optimizer.zero_grad()

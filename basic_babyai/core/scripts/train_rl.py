@@ -15,7 +15,9 @@ import numpy as np
 import subprocess
 import sys
 from pathlib import Path
-
+# set maximum gpu memory
+# torch.cuda.set_per_process_memory_fraction(1/6)
+# torch.cuda.memory_summary()
 root = Path(__file__).absolute().parent.parent
 log_dir = os.path.join(root.parent, 'logs')
 sys.path.insert(0, os.path.join(root, ''))
@@ -88,6 +90,8 @@ def main():
         'BabyAI-GoToSeq-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
         'BabyAI-GoToObjMazeS5-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
         'BabyAI-GoToSeqS5R2-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
+        'BabyAI-MiniBossLevel-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
+        'BabyAI-SynthS5R2-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key']
 
     }
 
@@ -279,7 +283,7 @@ def main():
 
             format_str = ("U {} | E {} | F {:06} | FPS {:04.0f} | D {} | R:xsmM {: .2f} {: .2f} {: .2f} {: .2f} | "
              "S {:.2f} | F:xsmM {:.1f} {:.1f} {} {} | H {:.3f} | V {:.3f} | "
-             "pL {: .3f} | vL {:.3f} | L {:.3f} | XL {:.3f} | gN {:.3f} | ")
+             "pL {: .3f} | vL {:.3f} | L {:.3f} | X-L {:.3f} | gN {:.3f} | ")
             logger.info(format_str.format(*data))
             if args.tb:
                 assert len(header) == len(data)
