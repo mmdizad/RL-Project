@@ -217,7 +217,7 @@ class BaseAlgo(ABC):
         # each episode's data is a continuous chunk
 
         exps = DictList()
-        exps.obs = [self.obss[i][j]
+        obss = [self.obss[i][j]
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
         # In commments below T is self.num_frames_per_proc, P is self.num_procs,
@@ -241,7 +241,7 @@ class BaseAlgo(ABC):
 
         # Preprocess experiences
 
-        exps.obs = self.preprocess_obss(exps.obs, device=self.device)
+        exps.obs = self.preprocess_obss(obss, device=self.device)
 
         # Log some values
 
@@ -260,7 +260,7 @@ class BaseAlgo(ABC):
         self.log_reshaped_return = self.log_reshaped_return[-self.num_procs:]
         self.log_num_frames = self.log_num_frames[-self.num_procs:]
 
-        return exps, log
+        return exps, log, obss
 
     @abstractmethod
     def update_parameters(self):
