@@ -8,7 +8,7 @@ import os
 import logging
 import csv
 import json
-import gym
+import gymnasium as gym
 import datetime
 import torch
 import numpy as np
@@ -36,6 +36,7 @@ from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 
 import time
+from gymnasium.wrappers import PixelObservationWrapper
 
 os.environ['BABYAI_STORAGE'] = log_dir
 def count_parameters(model):
@@ -43,7 +44,6 @@ def count_parameters(model):
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 
 def main():
 
@@ -91,17 +91,19 @@ def main():
         'BabyAI-GoToObjMazeS5-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
         'BabyAI-GoToSeqS5R2-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
         'BabyAI-MiniBossLevel-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
-        'BabyAI-SynthS5R2-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key']
-
+        'BabyAI-SynthS5R2-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
+        'BabyAI-UnblockPickup-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
+        'BabyAI-Pickup-v0': ['red box', 'green ball', 'purple key', 'yellow box', 'blue ball', 'grey key'],
     }
 
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-
+    args.continue_pretrained = 'gotoseq_attention_BabyAI-GoToSeqS5R2-v0_ppo_cnn1_gru_mem_seed42_23-09-30-17-44-56_best'
     continue_pretrained = args.continue_pretrained
     use_pretrained = not continue_pretrained is None
+    use_pretrained = False
     if use_pretrained:
-        prev_args = torch.load(f'models/{continue_pretrained}/args.pkl')
+        prev_args = torch.load(f'./logs/models/{continue_pretrained}/args.pkl')
         for a in vars(args):
             if not a in vars(prev_args):
                 prev_args.__dict__.update({a: vars(args)[a]})
@@ -114,8 +116,9 @@ def main():
     # Generate environments
     envs = []
     for i in range(args.procs):
-        env = gym.make(args.env)
-        env.seed(seed = 100 * args.seed + i)
+        env = gym.make(args.env, render_mode='rgb_array')
+        env = PixelObservationWrapper(env, pixels_only=False)
+        # env.seed(seed = 100 * args.seed + i)
         envs.append(env)
 
     # Define model name
@@ -181,7 +184,7 @@ def main():
                                  reshape_reward,
                                  use_compositional_split=args.use_compositional_split,
                                  compositional_test_splits=compositional_test_splits[args.env],
-                                 device=device, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp)
+                                 device=device, att_dim=args.instr_dim, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp)
     else:
         raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 
