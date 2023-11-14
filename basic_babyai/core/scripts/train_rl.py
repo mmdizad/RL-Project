@@ -183,7 +183,7 @@ def main():
                                  reshape_reward,
                                  use_compositional_split=args.use_compositional_split,
                                  compositional_test_splits=compositional_test_splits[args.env],
-                                 device=device, att_dim=args.instr_dim, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp, reward_coef=args.reward_coef)
+                                 device=device, att_dim=args.instr_dim, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp)
     else:
         raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 

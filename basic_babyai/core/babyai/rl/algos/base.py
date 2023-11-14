@@ -2,11 +2,12 @@ from abc import ABC, abstractmethod
 import torch
 import numpy
 from operator import add
-
+import torch.nn as nn
 from babyai.rl.format import default_preprocess_obss
 from babyai.rl.utils import DictList, ParallelEnv
 from babyai.rl.utils.supervised_losses import ExtraInfoCollector
-
+import matplotlib.pyplot as plt
+import sys
 
 class BaseAlgo(ABC):
     """The base class for RL algorithms."""
@@ -99,7 +100,7 @@ class BaseAlgo(ABC):
         self.rewards = torch.zeros(*shape, device=self.device)
         self.advantages = torch.zeros(*shape, device=self.device)
         self.log_probs = torch.zeros(*shape, device=self.device)
-
+        self.threshold = 2
         if self.aux_info:
             self.aux_info_collector = ExtraInfoCollector(self.aux_info, shape, self.device)
 
@@ -113,6 +114,9 @@ class BaseAlgo(ABC):
         self.log_return = [0] * self.num_procs
         self.log_reshaped_return = [0] * self.num_procs
         self.log_num_frames = [0] * self.num_procs
+        # self.ln = nn.Linear(1, 64).to(self.device)
+        self.action_embedding = nn.Embedding(num_embeddings=self.env.action_space.n, embedding_dim=64).to(self.device)
+        self.counter = 0
 
     def collect_experiences(self):
         """Collects rollouts and computes advantages.
@@ -136,12 +140,18 @@ class BaseAlgo(ABC):
         """
         
         self.acmodel.reset_hiddens()
-
+        segments_scores = numpy.zeros((self.num_procs, 5, self.num_frames_per_proc))
+        # mean_segments_scores = numpy.zeros((self.num_procs, 5))
+        # frame_counter = numpy.zeros((self.num_procs, 1))
+        instr_mask = numpy.zeros((self.num_procs, 5, 2))
         for i in range(self.num_frames_per_proc):
+            self.counter += self.num_procs
+            
+            
             # Do one agent-environment interaction
 
             preprocessed_obs = self.preprocess_obss(self.obs, device=self.device)
-
+            # print(f'preprocessed_obs {preprocessed_obs[0]}')
             with torch.no_grad():
                 model_results = self.acmodel(preprocessed_obs, self.memory * self.mask.unsqueeze(1))
                 dist = model_results['dist']
@@ -150,14 +160,30 @@ class BaseAlgo(ABC):
                 extra_predictions = model_results['extra_predictions']
 
             action = dist.sample()
+            # print(f'number of actions: {self.env.action_space.n}')
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
-
+            # print(f'done: {done}')
+            observation_instr = [0] * self.num_procs
+            for agent_id in range(self.num_procs):
+                total_instr = obs[agent_id]['mission']
+                total_instr = total_instr.replace(",", "")
+                instr_tokens = total_instr.split(' ')
+                instr_tokens = [idx for idx, x in enumerate(instr_tokens) if x in ['and', 'then', 'after', 'before']]
+                observation_instr[agent_id] = instr_tokens
+            
             if self.aux_info:
                 env_info = self.aux_info_collector.process(env_info)
                 # env_info = self.process_aux_info(env_info)
 
             # Update experiences values
-
+            # print(f'obs_shape:{len(self.obs)}')
+            # print(self.counter)
+            for proc in range(self.num_procs):
+                if done[proc]:
+                    instr_mask[proc] = numpy.zeros((5, 2))
+                    # mean_segments_scores[proc] = numpy.zeros((5))
+                    # frame_counter[proc] = 0
+                        
             self.obss[i] = self.obs
             self.obs = obs
 
@@ -176,13 +202,18 @@ class BaseAlgo(ABC):
                     self.reshape_reward(obs_, action_, reward_, done_)
                     for obs_, action_, reward_, done_ in zip(obs, action, self.rewards[i], done)
                 ], device=self.device)
-                
-            # add aux reward
+                    
+            # instr masking
             aux_obs = [self.obss[k][j]
                     for j in range(self.num_procs)
                     for k in range(i+1)]
             aux_obs = self.preprocess_obss(aux_obs, device=self.device)
             aux_mask = self.masks[:i+1].transpose(0, 1).reshape(-1).unsqueeze(1)
+            aux_actions = self.actions[:i+1].transpose(0, 1)
+            action_shape = aux_actions.shape
+            aux_actions = aux_actions.reshape(-1, 1)
+            aux_actions = self.action_embedding(aux_actions.to(torch.long)).reshape(*action_shape, 64)           
+            # print(f'actions_shape: {aux_actions.shape}')
             aux_mem = self.memories[:i+1].transpose(0, 1).reshape(-1, *self.memories.shape[2:])
             
             model_results = self.acmodel(aux_obs, aux_mem * aux_mask, mask=aux_mask)
@@ -190,40 +221,69 @@ class BaseAlgo(ABC):
             with torch.no_grad():
                 text_matrix = model_results["token_embedding"]
                 text_matrix = text_matrix.reshape(self.num_procs, i+1, *text_matrix.shape[1:])[:, 0]
-                text_global_embeddings = model_results["instr_embedding"]
-                text_global_embeddings = text_global_embeddings.reshape(self.num_procs, i+1, *text_global_embeddings.shape[1:])[:, 0, :]
 
                 video_matrix = model_results["frame_embedding"]
                 video_matrix = video_matrix.reshape(self.num_procs, i+1, *video_matrix.shape[1:])
+                video_matrix = torch.add(video_matrix, aux_actions)
                 video_global_embeddings = self.video_attn_model(video_matrix)
-            
-                aux_rewards = torch.zeros(self.num_procs, device=self.device)
+                
                 for proc in range(self.num_procs):
-                    frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                        torch.matmul(video_matrix[proc], text_matrix[proc].T), self.x_clip_temp
-                    )
-                    text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(video_matrix[proc], text_global_embeddings[proc]), self.x_clip_temp
-                    )
-                    video_token_similarity = self.Attention_Over_Similarity_Vector(
-                        torch.matmul(text_matrix[proc], video_global_embeddings[proc]).T, self.x_clip_temp
-                    )
-                    video_text_similarity = torch.matmul(
-                        video_global_embeddings[proc].T, text_global_embeddings[proc]
-                    )
-                    aux_rewards[proc] = self.reward_coef * (
-                        frame_token_similarity
-                        + text_frame_similarity
-                        + video_token_similarity
-                        + video_text_similarity
-                    ) / 4
-
-                print("#" * 20)
-                print(f'original reward: {torch.mean(self.rewards[i])}\n')
-                print(f'aux reward: {torch.mean(aux_rewards)}')
-                self.rewards[i] = torch.add(self.rewards[i], aux_rewards)
+                    # frame_counter[proc] += 1
+                    token_video_score = torch.matmul(text_matrix[proc], video_global_embeddings[proc]).T
+                    split_list = observation_instr[proc]
+                    if not split_list:
+                        continue
+                    split_list.insert(0, -1)
+                    # print(f'{proc},{split_list}')
+                    for idx in range(len(split_list)): 
+                        start_index = split_list[idx] + 1   
+                        if idx == len(split_list)-1:
+                            end_index = len(self.obs[proc]['mission'].replace(",", "").split(' '))
+                            # end_index = -1
+                        else:
+                            end_index = split_list[idx+1]
+                        segment_score1 = numpy.mean(token_video_score.cpu().detach().numpy()[start_index:end_index])
+                        subtask_embedding = torch.tensor(self.preprocess_obss.instr_preproc([{'mission': 
+                            ' '.join(self.obs[proc]['mission'].replace(",", "").split(' ')[start_index:end_index])}]), device=self.device)
+                        # print([{'mission': 
+                        #     ' '.join(self.obs[proc]['mission'].replace(",", "").split(' ')[start_index:end_index])}])
+                        # print(f'subtask_embedding: {subtask_embedding}')
+                        subtask_global_embedding = self.acmodel._get_instr_embedding(subtask_embedding)[0][0]
+                        # print(f'subtask_global_embedding: {subtask_global_embedding}')
+                        segment_score2 = torch.matmul(video_global_embeddings[proc].T, subtask_global_embedding)
+                        # print(f'segment_score2: {segment_score2}')
+                        segment_score = (segment_score1 + segment_score2) / 2
+                        segments_scores[proc, idx, i] = segment_score
+                        # print(f'segment_score: {segment_score}')
+                        # print(f'mean: {numpy.mean(segments_scores[proc, idx, :i-1])}')
+                        if segment_score > self.threshold * numpy.mean(segments_scores[proc, idx, :i-1]):
+                            # print(proc, idx, start_index, end_index)
+                            # print(self.obs[proc]['mission'])
+                            instr_mask[proc][idx][0], instr_mask[proc][idx][1] = start_index, end_index
+                        # mean_segments_scores[proc, idx] = (mean_segments_scores[proc, idx] * (frame_counter[proc] - 1) + segment_score) / frame_counter[proc]
             
-
+            if i >= 7:
+                for proc in range(self.num_procs):
+                    prob = 0.8 * numpy.tanh(self.counter/1e7) + 0.01
+                    # print(prob)
+                    if prob >= numpy.random.uniform(0, 1):
+                        for seg in range(5):
+                            if instr_mask[proc][seg][1] != 0:
+                                if self.post_process(seg, instr_mask[proc]):
+                                    instr = self.obs[proc]['mission']
+                                    # print(f'before: {instr}')
+                                    instr = instr.replace(",", "")
+                                    instr = instr.split(' ')
+                                    # print(instr_mask[proc][seg])
+                                    # print(f'{proc}, {seg}')
+                                    for l in range(int(instr_mask[proc][seg][0]), int(instr_mask[proc][seg][1])):
+                                        instr[l] = '<mask>'
+                                    instr = ' '.join(instr)
+                                    # print(f'after: {instr}')
+                                    self.obs[proc]['mission'] = instr
+                            
+                    
+                    
             self.log_probs[i] = dist.log_prob(action)
 
             if self.aux_info:
@@ -287,7 +347,7 @@ class BaseAlgo(ABC):
             exps = self.aux_info_collector.end_collection(exps)
 
         # Preprocess experiences
-
+        # print(obss[0]['mission'])
         exps.obs = self.preprocess_obss(obss, device=self.device)
 
         # Log some values
@@ -312,3 +372,12 @@ class BaseAlgo(ABC):
     @abstractmethod
     def update_parameters(self):
         pass
+    
+    def post_process(self, seg_num, instr_mask):
+        if seg_num == 0:
+            return True
+        else:
+            for t in range(seg_num):
+                if instr_mask[t][1] == 0:
+                    return False
+            return True

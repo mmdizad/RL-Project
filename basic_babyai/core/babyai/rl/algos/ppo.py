@@ -49,13 +49,11 @@ class PPOAlgo(BaseAlgo):
         
         x_clip_coef=1,
         x_clip_temp=1,
-        reward_coef=1,
         num_attn_heads=4,
-        att_dim=1024,
+        att_dim=64,
     ):
         self.x_clip_coef = x_clip_coef
         self.x_clip_temp = x_clip_temp
-        self.reward_coef = reward_coef
         
         num_frames_per_proc = num_frames_per_proc or 128
 
@@ -211,7 +209,7 @@ class PPOAlgo(BaseAlgo):
                     video_matrix[i] = model_results["frame_embedding"]
 
                 for i in range(len(video_len)):
-                    video_matrix[:, video_len[i]+1:, :] = 0
+                    video_matrix[i, video_len[i]+1:, :] = 0
                 video_global_embeddings = self.video_attn_model(video_matrix)
 
                 #calculate similarity matrix
@@ -432,6 +430,8 @@ class VideoEmbeddingModel(nn.Module):
 
     def forward(self, video_frames):
         # print(video_frames.shape)
+        # print(f'video_frames_shape: {video_frames.shape}')
+        # print(f'positional_encodings_shape: {self.positional_encodings[:, :video_frames.size(1)].shape}')
         video_frames = video_frames + self.positional_encodings[:, :video_frames.size(1)].to(self.device)
         video_frames = video_frames.permute(1, 0, 2)  # (seq_len, batch_size, embed_dim)
         output, _ = self.multihead_attention(video_frames, video_frames, video_frames)
