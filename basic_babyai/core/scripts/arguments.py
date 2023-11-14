@@ -102,6 +102,8 @@ class ArgumentParser(argparse.ArgumentParser):
                             help="coefficient for x-clip loss (default: 1.0)")
         self.add_argument("--x_clip_temp", type=float, default=1,
                             help="temperature parameter used in x-clip attention (default: 1.0)")
+        self.add_argument("--reward_coef", type=float, default=1,
+                            help="coefficient for auxiliary reward (default: 1.0)")
         
         # NPS params
         self.add_argument("--in_dim", type=int, default=3)

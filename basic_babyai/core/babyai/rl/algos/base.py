@@ -176,6 +176,53 @@ class BaseAlgo(ABC):
                     self.reshape_reward(obs_, action_, reward_, done_)
                     for obs_, action_, reward_, done_ in zip(obs, action, self.rewards[i], done)
                 ], device=self.device)
+                
+            # add aux reward
+            aux_obs = [self.obss[k][j]
+                    for j in range(self.num_procs)
+                    for k in range(i+1)]
+            aux_obs = self.preprocess_obss(aux_obs, device=self.device)
+            aux_mask = self.masks[:i+1].transpose(0, 1).reshape(-1).unsqueeze(1)
+            aux_mem = self.memories[:i+1].transpose(0, 1).reshape(-1, *self.memories.shape[2:])
+            
+            model_results = self.acmodel(aux_obs, aux_mem * aux_mask, mask=aux_mask)
+            
+            with torch.no_grad():
+                text_matrix = model_results["token_embedding"]
+                text_matrix = text_matrix.reshape(self.num_procs, i+1, *text_matrix.shape[1:])[:, 0]
+                text_global_embeddings = model_results["instr_embedding"]
+                text_global_embeddings = text_global_embeddings.reshape(self.num_procs, i+1, *text_global_embeddings.shape[1:])[:, 0, :]
+
+                video_matrix = model_results["frame_embedding"]
+                video_matrix = video_matrix.reshape(self.num_procs, i+1, *video_matrix.shape[1:])
+                video_global_embeddings = self.video_attn_model(video_matrix)
+            
+                aux_rewards = torch.zeros(self.num_procs, device=self.device)
+                for proc in range(self.num_procs):
+                    frame_token_similarity = self.Attention_Over_Similarity_Matrix(
+                        torch.matmul(video_matrix[proc], text_matrix[proc].T), self.x_clip_temp
+                    )
+                    text_frame_similarity = self.Attention_Over_Similarity_Vector(
+                        torch.matmul(video_matrix[proc], text_global_embeddings[proc]), self.x_clip_temp
+                    )
+                    video_token_similarity = self.Attention_Over_Similarity_Vector(
+                        torch.matmul(text_matrix[proc], video_global_embeddings[proc]).T, self.x_clip_temp
+                    )
+                    video_text_similarity = torch.matmul(
+                        video_global_embeddings[proc].T, text_global_embeddings[proc]
+                    )
+                    aux_rewards[proc] = self.reward_coef * (
+                        frame_token_similarity
+                        + text_frame_similarity
+                        + video_token_similarity
+                        + video_text_similarity
+                    ) / 4
+
+                print("#" * 20)
+                print(f'original reward: {torch.mean(self.rewards[i])}\n')
+                print(f'aux reward: {torch.mean(aux_rewards)}')
+                self.rewards[i] = torch.add(self.rewards[i], aux_rewards)
+            
 
             self.log_probs[i] = dist.log_prob(action)
 

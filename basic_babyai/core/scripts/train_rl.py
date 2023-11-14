@@ -8,7 +8,7 @@ import os
 import logging
 import csv
 import json
-import gymnasium as gym
+import gym
 import datetime
 import torch
 import numpy as np
@@ -36,7 +36,7 @@ from babyai.evaluate import batch_evaluate
 from babyai.utils.agent import ModelAgent
 
 import time
-from gymnasium.wrappers import PixelObservationWrapper
+# from gymnasium.wrappers import PixelObservationWrapper
 
 os.environ['BABYAI_STORAGE'] = log_dir
 def count_parameters(model):
@@ -98,10 +98,9 @@ def main():
 
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
-    args.continue_pretrained = 'gotoseq_attention_BabyAI-GoToSeqS5R2-v0_ppo_cnn1_gru_mem_seed42_23-09-30-17-44-56_best'
+
     continue_pretrained = args.continue_pretrained
     use_pretrained = not continue_pretrained is None
-    use_pretrained = False
     if use_pretrained:
         prev_args = torch.load(f'./logs/models/{continue_pretrained}/args.pkl')
         for a in vars(args):
@@ -116,9 +115,9 @@ def main():
     # Generate environments
     envs = []
     for i in range(args.procs):
-        env = gym.make(args.env, render_mode='rgb_array')
-        env = PixelObservationWrapper(env, pixels_only=False)
-        # env.seed(seed = 100 * args.seed + i)
+        env = gym.make(args.env)
+        # env = PixelObservationWrapper(env, pixels_only=False)
+        env.seed(seed = 100 * args.seed + i)
         envs.append(env)
 
     # Define model name
@@ -184,7 +183,7 @@ def main():
                                  reshape_reward,
                                  use_compositional_split=args.use_compositional_split,
                                  compositional_test_splits=compositional_test_splits[args.env],
-                                 device=device, att_dim=args.instr_dim, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp)
+                                 device=device, att_dim=args.instr_dim, x_clip_coef=args.x_clip_coef, x_clip_temp=args.x_clip_temp, reward_coef=args.reward_coef)
     else:
         raise ValueError("Incorrect algorithm name: {}".format(args.algo))
 

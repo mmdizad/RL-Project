@@ -49,11 +49,13 @@ class PPOAlgo(BaseAlgo):
         
         x_clip_coef=1,
         x_clip_temp=1,
+        reward_coef=1,
         num_attn_heads=4,
         att_dim=1024,
     ):
         self.x_clip_coef = x_clip_coef
         self.x_clip_temp = x_clip_temp
+        self.reward_coef = reward_coef
         
         num_frames_per_proc = num_frames_per_proc or 128
 
