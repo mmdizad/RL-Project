@@ -3,6 +3,7 @@ import torch
 import numpy
 from operator import add
 import torch.nn as nn
+import torch.nn as nn
 from babyai.rl.format import default_preprocess_obss
 from babyai.rl.utils import DictList, ParallelEnv
 from babyai.rl.utils.supervised_losses import ExtraInfoCollector
@@ -160,6 +161,7 @@ class BaseAlgo(ABC):
                 extra_predictions = model_results['extra_predictions']
 
             action = dist.sample()
+            # print(f'number of actions: {self.env.action_space.n}')
             obs, reward, done, env_info = self.env.step(action.cpu().numpy())
 
             # split task to subtasks
@@ -332,6 +334,7 @@ class BaseAlgo(ABC):
 
         exps = DictList()
         obss = [self.obss[i][j]
+        obss = [self.obss[i][j]
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
         # In commments below T is self.num_frames_per_proc, P is self.num_procs,
@@ -356,6 +359,8 @@ class BaseAlgo(ABC):
         # Preprocess experiences
         # print(obss[0]['mission'])
         exps.obs = self.preprocess_obss(obss, device=self.device)
+        # print(obss[0]['mission'])
+        exps.obs = self.preprocess_obss(obss, device=self.device)
 
         # Log some values
 
@@ -375,10 +380,10 @@ class BaseAlgo(ABC):
         self.log_num_frames = self.log_num_frames[-self.num_procs:]
 
         return exps, log, obss
+        return exps, log, obss
 
     @abstractmethod
     def update_parameters(self):
-        pass
     
     def post_process(self, seg_num, instr_mask, instr):
         instr = instr.replace(",", "").split(' ')
