@@ -102,6 +102,10 @@ class ArgumentParser(argparse.ArgumentParser):
                             help="coefficient for x-clip loss (default: 1.0)")
         self.add_argument("--x_clip_temp", type=float, default=1,
                             help="temperature parameter used in x-clip attention (default: 1.0)")
+        self.add_argument("--reward_coef", type=float, default=1,
+                            help="coefficient for auxiliary reward (default: 1.0)")
+        self.add_argument("--instruction_tracking_threshold", type=float, default=2,
+                            help="threshold for instruction tracking (default: 2.0)")
         
         # NPS params
         self.add_argument("--in_dim", type=int, default=3)
@@ -121,6 +125,8 @@ class ArgumentParser(argparse.ArgumentParser):
         self.add_argument("--continue_pretrained", type=str, default=None)
         self.add_argument("--film_d", type=int, default=128)
         self.add_argument("--use_compositional_split", action='store_true')
+        self.add_argument("--apply_aux", action='store_true')
+        self.add_argument("--apply_instruction_tracking", action='store_true')
 
         self.add_argument("--load_model", action='store_true')
 

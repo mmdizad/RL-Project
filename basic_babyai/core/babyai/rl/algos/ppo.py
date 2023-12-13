@@ -1,9 +1,13 @@
 from os import device_encoding
+import math
 import sys
 import numpy
 import torch
+import seaborn as sns
+import matplotlib.pyplot as plt
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 from babyai.rl.algos.base import BaseAlgo
 
@@ -43,11 +47,17 @@ class PPOAlgo(BaseAlgo):
         compositional_test_splits=None,
         device=None,
         
+        apply_instruction_tracking=False,
+        threshold=2,
+        apply_aux=False,
         x_clip_coef=1,
         x_clip_temp=1,
+        num_attn_heads=4,
+        att_dim=64,
     ):
         self.x_clip_coef = x_clip_coef
         self.x_clip_temp = x_clip_temp
+        self.apply_aux = apply_aux
         
         num_frames_per_proc = num_frames_per_proc or 128
 
@@ -68,6 +78,8 @@ class PPOAlgo(BaseAlgo):
             use_compositional_split=use_compositional_split,
             compositional_test_splits=compositional_test_splits,
             device=device,
+            apply_instruction_tracking=apply_instruction_tracking,
+            threshold=threshold,
         )
 
         self.clip_eps = clip_eps
@@ -80,12 +92,15 @@ class PPOAlgo(BaseAlgo):
             self.acmodel.parameters(), lr, (beta1, beta2), eps=adam_eps
         )
         self.batch_num = 0
+        self.att_dim = att_dim
+        self.num_attn_heads = num_attn_heads
+        self.video_attn_model = VideoEmbeddingModel(att_dim, self.num_attn_heads, num_frames_per_proc, device)
 
 
     def update_parameters(self):
         # Collect experiences
 
-        exps, logs = self.collect_experiences()
+        exps, logs, obss = self.collect_experiences()
         """
         exps is a DictList with the following keys ['obs', 'memory', 'mask', 'action', 'value', 'reward',
          'advantage', 'returnn', 'log_prob'] and ['collected_info', 'extra_predictions'] if we use aux_info
@@ -98,6 +113,44 @@ class PPOAlgo(BaseAlgo):
         being the added information. They are either (n_procs * n_frames_per_proc) 1D tensors or
         (n_procs * n_frames_per_proc) x k 2D tensors where k is the number of classes for multiclass classification
         """
+        
+        # id = 2
+        # env_idx = range(id * 80, (id + 1) * 80)
+        # sb = exps[env_idx]
+        # mask = sb.mask.detach().cpu().numpy()
+        # completed_videos = numpy.where(mask == 0)[0].astype(int)
+        # print(obss[0].keys())
+        # print(completed_videos)
+        # words = (obss[80 * id]["mission"]).split(' ')
+        # print(words)
+        # print(f'mission: {(obss[80 * id]["mission"])}')
+        # for i in completed_videos:
+        #     print(f'mission: {(obss[i]["mission"])}')
+        # model_results = self.acmodel(sb.obs, sb.memory * sb.mask, mask=sb.mask)
+        # # get token and sentence embeddings
+        # text_matrix = model_results["token_embedding"][0]
+        # video_matrix = model_results["frame_embedding"]
+        
+        # att_map = torch.matmul(video_matrix, text_matrix.T)[0:completed_videos[0]]
+        # att_map = torch.softmax(att_map, dim=0)
+        # best_frame = []
+        # # best_frame_2 = torch.argmax(att_map, dim=0).detach().cpu().numpy()
+        # for i in range(att_map.shape[1]):
+        #     best_frame.append(torch.topk(att_map[:,i], 3).indices.detach().cpu().numpy())
+        
+        # mx = sns.heatmap(att_map.detach().cpu().numpy())
+        # figure = mx.get_figure()    
+        # figure.savefig(f'att_map.png', dpi=400)
+        # for i in range(completed_videos[0]):
+        #     d = obss[i + id * 80]
+        #     plt.imsave(f"{i}.png", d['pixels'])
+        #     plt.clf()
+        
+        # for i in range(len(words)):
+        #     print(f'{words[i]}: {best_frame[i]}: {att_map[best_frame[i], i].detach().cpu().numpy()}')
+        
+        # sys.exit()
+        
         
         for _ in range(self.epochs):
             # Initialize log values
@@ -115,84 +168,84 @@ class PPOAlgo(BaseAlgo):
             
             #################################################################################################
             # Preprocessing
-            masks = exps.mask.detach().clone().cpu().numpy()
-            completed_videos = numpy.where(masks == 0)[0]
-            video_info = numpy.array([[i // self.num_frames_per_proc, i % self.num_frames_per_proc] for i in completed_videos])
-            
-            num_samples = 0
-            video_idx = numpy.array([], dtype=int)
-            video_len = numpy.array([], dtype=int)
-            max_len = 0
-            
-            if video_info.size != 0:
-                for idx in video_info:
-                    if idx[0] not in video_idx:
-                        video_idx = numpy.append(video_idx, idx[0])
-                        video_len = numpy.append(video_len, idx[1])
-                num_samples = video_idx.shape[0]
-                max_len = numpy.max(video_len) + 1
+            if self.apply_aux:
+                ## detect successful episodes
+                masks = exps.mask.detach().clone().cpu().numpy()
+                completed_videos = numpy.where(masks == 0)[0]
+                video_info = numpy.array([[i // self.num_frames_per_proc, i % self.num_frames_per_proc] for i in completed_videos])
 
-            # X-CLIP loss
-            if num_samples > 1:
-                similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
-                video_matrix = torch.zeros(
-                    (num_samples, max_len, self.acmodel.instr_dim), device=self.device
-                )
-                # video_global_embeddings = torch.zeros(
-                #     (num_samples, self.acmodel.instr_dim), device=self.device
-                # )
+                num_samples = 0
+                # index of successful episode
+                video_idx = numpy.array([], dtype=int)
+                # index of termination of an episode
+                video_len = numpy.array([], dtype=int)
+                max_len = 0
 
-                text_matrix = torch.zeros(
-                    (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device
-                )
-                text_global_embeddings = torch.zeros(
-                    (num_samples, self.acmodel.instr_dim), device=self.device
-                )
-                # build feature matrices
-                env_start_index = video_idx * self.num_frames_per_proc 
-                for i in range(len(env_start_index)):
-                    idx = env_start_index[i]
-                    env_idx = range(idx, idx + max_len)
-                    sb = exps[env_idx]
-                    model_results = self.acmodel(sb.obs, sb.memory * sb.mask, mask=sb.mask)
-                    # get token and sentence embeddings
-                    text_matrix[i] = model_results["token_embedding"][0]
-                    text_global_embeddings[i] = model_results["instr_embedding"][0]
-                    # get frame embeddigns for a single frame
-                    video_matrix[i] = model_results["frame_embedding"]
+                if video_info.size != 0:
+                    for idx in video_info:
+                        if idx[0] not in video_idx:
+                            video_idx = numpy.append(video_idx, idx[0])
+                            video_len = numpy.append(video_len, idx[1])
+                    num_samples = video_idx.shape[0]
+                    max_len = numpy.max(video_len) + 1
 
-                for i in range(len(video_len)):
-                    video_matrix[:, video_len[i]+1:, :] = 0
-                video_global_embeddings = torch.mean(video_matrix, dim=1)
+                # X-CLIP loss
+                if num_samples > 1:
+                    similarity_mx = torch.zeros((num_samples, num_samples), device=self.device)
+                    video_matrix = torch.zeros(
+                        (num_samples, max_len, self.acmodel.instr_dim), device=self.device
+                    )
+                    text_matrix = torch.zeros(
+                        (num_samples, exps.obs.instr.shape[1], self.acmodel.instr_dim), device=self.device
+                    )
+                    text_global_embeddings = torch.zeros(
+                        (num_samples, self.acmodel.instr_dim), device=self.device
+                    )
+                    # build feature matrices
+                    env_start_index = video_idx * self.num_frames_per_proc 
+                    for i in range(len(env_start_index)):
+                        idx = env_start_index[i]
+                        env_idx = range(idx, idx + max_len)
+                        sb = exps[env_idx]
+                        model_results = self.acmodel(sb.obs, sb.memory * sb.mask, mask=sb.mask)
+                        # get token and sentence embeddings
+                        text_matrix[i] = model_results["token_embedding"][0]
+                        text_global_embeddings[i] = model_results["instr_embedding"][0]
+                        # get frame embeddigns for a single frame
+                        video_matrix[i] = model_results["frame_embedding"]
 
-                #calculate similarity matrix
-                for i in range(num_samples):
-                    for j in range(num_samples):
-                        frame_token_similarity = self.Attention_Over_Similarity_Matrix(
-                            torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
-                        )
-                        text_frame_similarity = self.Attention_Over_Similarity_Vector(
-                            torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
-                        )
-                        video_token_similarity = self.Attention_Over_Similarity_Vector(
-                            torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
-                        )
-                        video_text_similarity = torch.matmul(
-                            video_global_embeddings[i].T, text_global_embeddings[j]
-                        )
-                        similarity_mx[i][j] = (
-                            frame_token_similarity
-                            + text_frame_similarity
-                            + video_token_similarity
-                            + video_text_similarity
-                        ) / 4
-                # calculate loss function and optimize 
-                x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
-                x_clip_losses.append(x_clip_loss.detach().item())
-                self.optimizer.zero_grad()
-                x_clip_loss.backward()
-                self.optimizer.step()          
-            #################################################################################################
+                    for i in range(len(video_len)):
+                        video_matrix[i, video_len[i]+1:, :] = 0
+                    video_global_embeddings = self.video_attn_model(video_matrix)
+
+                    #calculate similarity matrix
+                    for i in range(num_samples):
+                        for j in range(num_samples):
+                            frame_token_similarity = self.Attention_Over_Similarity_Matrix(
+                                torch.matmul(video_matrix[i], text_matrix[j].T), self.x_clip_temp
+                            )
+                            text_frame_similarity = self.Attention_Over_Similarity_Vector(
+                                torch.matmul(video_matrix[i], text_global_embeddings[j]), self.x_clip_temp
+                            )
+                            video_token_similarity = self.Attention_Over_Similarity_Vector(
+                                torch.matmul(text_matrix[j], video_global_embeddings[i]).T, self.x_clip_temp
+                            )
+                            video_text_similarity = torch.matmul(
+                                video_global_embeddings[i].T, text_global_embeddings[j]
+                            )
+                            similarity_mx[i][j] = (
+                                frame_token_similarity
+                                + text_frame_similarity
+                                + video_token_similarity
+                                + video_text_similarity
+                            ) / 4
+                    # calculate loss function and optimize 
+                    x_clip_loss = self.calculate_contrastive_loss(similarity_mx) * self.x_clip_coef
+                    x_clip_losses.append(x_clip_loss.detach().item())
+                    self.optimizer.zero_grad()
+                    x_clip_loss.backward()
+                    self.optimizer.step()          
+                #################################################################################################
 
             """
             For each epoch, we create int(total_frames / batch_size + 1) batches, each of size batch_size (except
@@ -370,3 +423,32 @@ class PPOAlgo(BaseAlgo):
         weighted_row_sum = self.Attention_Over_Similarity_Vector(row_sum, temp)
 
         return (weighted_col_sum + weighted_row_sum) / 2
+
+class VideoEmbeddingModel(nn.Module):
+    def __init__(self, embed_dim, num_heads, max_sequence_length, device):
+        super(VideoEmbeddingModel, self).__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.max_sequence_length = max_sequence_length
+        self.device = device
+        self.multihead_attention = nn.MultiheadAttention(embed_dim, num_heads).to(device)
+        self.positional_encodings = self._generate_positional_encodings(max_sequence_length, embed_dim)
+
+    def forward(self, video_frames):
+        # print(video_frames.shape)
+        # print(f'video_frames_shape: {video_frames.shape}')
+        # print(f'positional_encodings_shape: {self.positional_encodings[:, :video_frames.size(1)].shape}')
+        video_frames = video_frames + self.positional_encodings[:, :video_frames.size(1)].to(self.device)
+        video_frames = video_frames.permute(1, 0, 2)  # (seq_len, batch_size, embed_dim)
+        output, _ = self.multihead_attention(video_frames, video_frames, video_frames)
+        output = output.permute(1, 0, 2)  # (batch_size, seq_len, embed_dim)
+        average_embedding = torch.mean(output, dim=1)  # (batch_size, embed_dim)
+        return average_embedding
+
+    def _generate_positional_encodings(self, max_length, embed_dim):
+        position = torch.arange(0, max_length).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, embed_dim, 2) * -(math.log(10000.0) / embed_dim))
+        positional_encodings = torch.zeros(1, max_length, embed_dim)
+        positional_encodings[:, :, 0::2] = torch.sin(position * div_term)
+        positional_encodings[:, :, 1::2] = torch.cos(position * div_term)
+        return positional_encodings

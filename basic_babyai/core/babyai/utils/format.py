@@ -62,7 +62,7 @@ class InstructionsPreprocessor(object):
 
         for obs in obss:
             tokens = re.findall("([a-z]+)", obs["mission"].lower())
-            instr = numpy.array([self.vocab[token] for token in tokens])
+            instr = numpy.array([self.vocab[token] if token != 'mask' else 0 for token in tokens])
             raw_instrs.append(instr)
             max_instr_len = max(len(instr), max_instr_len)
 
