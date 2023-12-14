@@ -294,6 +294,7 @@ class BaseAlgo(ABC):
 
                   
             self.log_probs[i] = dist.log_prob(action)
+            
 
             if self.aux_info:
                 self.aux_info_collector.fill_dictionaries(i, env_info, extra_predictions)
@@ -358,8 +359,6 @@ class BaseAlgo(ABC):
         # Preprocess experiences
         # print(obss[0]['mission'])
         exps.obs = self.preprocess_obss(obss, device=self.device)
-        # print(obss[0]['mission'])
-        exps.obs = self.preprocess_obss(obss, device=self.device)
 
         # Log some values
 
@@ -378,7 +377,6 @@ class BaseAlgo(ABC):
         self.log_reshaped_return = self.log_reshaped_return[-self.num_procs:]
         self.log_num_frames = self.log_num_frames[-self.num_procs:]
 
-        return exps, log, obss
         return exps, log, obss
 
     @abstractmethod
