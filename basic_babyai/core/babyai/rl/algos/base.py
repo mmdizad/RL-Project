@@ -334,7 +334,6 @@ class BaseAlgo(ABC):
 
         exps = DictList()
         obss = [self.obss[i][j]
-        obss = [self.obss[i][j]
                     for j in range(self.num_procs)
                     for i in range(self.num_frames_per_proc)]
         # In commments below T is self.num_frames_per_proc, P is self.num_procs,
