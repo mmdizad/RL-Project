@@ -381,7 +381,7 @@ class BaseAlgo(ABC):
 
     @abstractmethod
     def update_parameters(self):
-    
+        pass
     def post_process(self, seg_num, instr_mask, instr):
         instr = instr.replace(",", "").split(' ')
         if self.find_then_before(int(instr_mask[seg_num][0]), instr):

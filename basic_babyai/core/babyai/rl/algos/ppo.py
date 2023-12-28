@@ -58,8 +58,6 @@ class PPOAlgo(BaseAlgo):
         x_clip_temp=1,
         num_attn_heads=4,
         att_dim=64,
-        num_attn_heads=4,
-        att_dim=64,
     ):
         self.x_clip_coef = x_clip_coef
         self.x_clip_temp = x_clip_temp
@@ -101,15 +99,11 @@ class PPOAlgo(BaseAlgo):
         self.att_dim = att_dim
         self.num_attn_heads = num_attn_heads
         self.video_attn_model = VideoEmbeddingModel(att_dim, self.num_attn_heads, num_frames_per_proc, device)
-        self.att_dim = att_dim
-        self.num_attn_heads = num_attn_heads
-        self.video_attn_model = VideoEmbeddingModel(att_dim, self.num_attn_heads, num_frames_per_proc, device)
 
 
     def update_parameters(self):
         # Collect experiences
 
-        exps, logs, obss = self.collect_experiences()
         exps, logs, obss = self.collect_experiences()
         """
         exps is a DictList with the following keys ['obs', 'memory', 'mask', 'action', 'value', 'reward',
@@ -471,35 +465,6 @@ class PPOAlgo(BaseAlgo):
         weighted_row_sum = self.Attention_Over_Similarity_Vector(row_sum, temp)
 
         return (weighted_col_sum + weighted_row_sum) / 2
-
-class VideoEmbeddingModel(nn.Module):
-    def __init__(self, embed_dim, num_heads, max_sequence_length, device):
-        super(VideoEmbeddingModel, self).__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.max_sequence_length = max_sequence_length
-        self.device = device
-        self.multihead_attention = nn.MultiheadAttention(embed_dim, num_heads).to(device)
-        self.positional_encodings = self._generate_positional_encodings(max_sequence_length, embed_dim)
-
-    def forward(self, video_frames):
-        # print(video_frames.shape)
-        # print(f'video_frames_shape: {video_frames.shape}')
-        # print(f'positional_encodings_shape: {self.positional_encodings[:, :video_frames.size(1)].shape}')
-        video_frames = video_frames + self.positional_encodings[:, :video_frames.size(1)].to(self.device)
-        video_frames = video_frames.permute(1, 0, 2)  # (seq_len, batch_size, embed_dim)
-        output, _ = self.multihead_attention(video_frames, video_frames, video_frames)
-        output = output.permute(1, 0, 2)  # (batch_size, seq_len, embed_dim)
-        average_embedding = torch.mean(output, dim=1)  # (batch_size, embed_dim)
-        return average_embedding
-
-    def _generate_positional_encodings(self, max_length, embed_dim):
-        position = torch.arange(0, max_length).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, embed_dim, 2) * -(math.log(10000.0) / embed_dim))
-        positional_encodings = torch.zeros(1, max_length, embed_dim)
-        positional_encodings[:, :, 0::2] = torch.sin(position * div_term)
-        positional_encodings[:, :, 1::2] = torch.cos(position * div_term)
-        return positional_encodings
 
 class VideoEmbeddingModel(nn.Module):
     def __init__(self, embed_dim, num_heads, max_sequence_length, device):
