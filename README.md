@@ -1,4 +1,4 @@
-# Implementation of CAREL on BabyAi encironment
+# Implementation of CAREL on BabyAi environment
 
 This repository presents an implementation of CAREL (Cross-modal Auxiliary REinforcement Learning) on the BabyAI environment. BabyAI is a platform for studying and developing AI agents in a gridworld environment, and CAREL is a reinforcement learning framework that incorporates the concept of corss-modality to enhance agent learning.
 
